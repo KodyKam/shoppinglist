@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Shopping List" />
+<title>Materials Shopping List</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #EEF2EA; }
+  #root { min-height: 100vh; }
+  #boot { font-family: system-ui, sans-serif; color: #5E6B62; padding: 40px; text-align: center; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.6/babel.min.js"></script>
+</head>
+<body>
+<div id="root"><div id="boot">Loading shopping list…</div></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback } = React;
+
+/* ------------------------------------------------------------------ */
+/*  Persistent storage                                                 */
+/* ------------------------------------------------------------------ */
+const NS = "shoplist:";
+const store = {
+  async get(key) { try { const v = localStorage.getItem(NS + key); return v === null ? null : v; } catch (e) { return null; } },
+  async set(key, value) { try { localStorage.setItem(NS + key, value); } catch (e) { alert("Storage is full or blocked in this browser."); } },
+};
+
+/* ------------------------------------------------------------------ */
+/*  Tokens (shared with the rest of the suite)                         */
+/* ------------------------------------------------------------------ */
+const C = {
+  bg: "#EEF2EA", surface: "#FFFFFF", pine: "#1F4D3A", pineDark: "#16382A",
+  ink: "#1A241F", muted: "#5E6B62", line: "#DCE4D8", lineSoft: "#E8EDE4",
+  marigold: "#E29A2C", marigoldSoft: "#FBEBCF", red: "#C0492F", redSoft: "#F6E2DC",
+  green: "#2E7D52", greenSoft: "#DCEFE3",
+};
+const DISPLAY = '"Bricolage Grotesque", "IBM Plex Sans", system-ui, sans-serif';
+const BODY = '"IBM Plex Sans", system-ui, -apple-system, sans-serif';
+const MONO = '"IBM Plex Mono", ui-monospace, Menlo, monospace';
+
+const uid = () => Math.random().toString(36).slice(2, 9);
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const money = (n) => new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(Number(n) || 0);
+
+/* ------------------------------------------------------------------ */
+/*  Seed: the 32 budget items (name, qty, budgeted unit price)         */
+/* ------------------------------------------------------------------ */
+const SEED = [
+  ["Whiteboard Easel", 1, 75.90],
+  ["Name tag labels", 1, 9.99],
+  ["Affirmation cards 50 pack (younger kids)", 1, 24.99],
+  ["Emotional social skills games", 2, 29.99],
+  ["Alphabet bingo game (younger kids)", 2, 16.99],
+  ["Emotions flash cards (younger kids)", 2, 11.99],
+  ["Motivational stickers 300 pieces", 1, 5.99],
+  ["Social skills activities for kids (book)", 1, 8.99],
+  ["70 Conversation cards", 1, 14.99],
+  ["45 Affirmation cards", 1, 13.99],
+  ["Feelings thermometer", 1, 15.99],
+  ["Feeling wheel emotions book", 1, 16.99],
+  ["3 Pack circle template tools", 1, 9.98],
+  ["Cardstock 20 colours 200 pack", 1, 26.53],
+  ["Markers 216 count", 1, 64.99],
+  ["Metallic markers 12 pack", 2, 13.29],
+  ["Inspirational stickers 100 pieces", 1, 12.99],
+  ["Reward stickers 2000 pieces", 1, 14.99],
+  ["Collage supplies", 1, 30.00],
+  ["3 pack 12 count coloured pencils", 1, 12.22],
+  ["Crayons 12 pack 24 count", 1, 29.64],
+  ["White kraft paper bags", 1, 15.19],
+  ["Fidget items", 1, 35.97],
+  ["Poster board 50 sheets", 1, 48.70],
+  ["70 Scenario cards", 1, 9.99],
+  ["Magazines", 1, 50.00],
+  ["6 pack glue sticks", 2, 6.49],
+  ["Clear glue", 4, 2.99],
+  ["6 pack kid scissors", 1, 11.99],
+  ["Cardstock paper 100 sheets", 1, 24.99],
+  ["Coins / play money", 3, 19.94],
+  ["Printing paper", 1, 3.75],
+].map(([name, qty, unit], i) => ({ id: uid(), idx: i + 1, name, qty, unit, bought: false, actualUnit: null, date: "" }));
+
+/* line math (mirrors the spreadsheet's per-line rounded HST) */
+const line = (unit, qty, taxRate) => {
+  const sub = r2(unit * qty);
+  const tax = r2(sub * taxRate);
+  return { sub, tax, total: r2(sub + tax) };
+};
+
+/* ================================================================== */
+/*  App                                                                */
+/* ================================================================== */
+function App() {
+  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState([]);
+  const [settings, setSettings] = useState({ programName: "Community Children's Program", taxRate: 0.13 });
+  const [filter, setFilter] = useState("todo");
+  const [adding, setAdding] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const it = await store.get("items");
+      const st = await store.get("settings");
+      if (it) { try { setItems(JSON.parse(it)); } catch (e) { setItems(SEED); } }
+      else { setItems(SEED); store.set("items", JSON.stringify(SEED)); }
+      if (st) { try { setSettings((s) => ({ ...s, ...JSON.parse(st) })); } catch (e) {} }
+      setLoading(false);
+    })();
+  }, []);
+
+  useEffect(() => {
+    const id = "shop-fonts";
+    if (!document.getElementById(id)) {
+      const l = document.createElement("link"); l.id = id; l.rel = "stylesheet";
+      l.href = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap";
+      document.head.appendChild(l);
+    }
+  }, []);
+
+  const saveItems = useCallback((next) => { setItems(next); store.set("items", JSON.stringify(next)); }, []);
+  const saveSettings = useCallback((next) => { setSettings(next); store.set("settings", JSON.stringify(next)); }, []);
+
+  const tax = settings.taxRate;
+  const update = (id, patch) => saveItems(items.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+  const toggleBought = (it) => {
+    if (it.bought) update(it.id, { bought: false });
+    else update(it.id, { bought: true, actualUnit: it.actualUnit ?? it.unit, date: it.date || todayISO() });
+  };
+  const remove = (id) => { if (confirm("Remove this item from the list?")) saveItems(items.filter((it) => it.id !== id)); };
+  const addItem = (name, qty, unit) => {
+    const next = [...items, { id: uid(), idx: (items.reduce((m, i) => Math.max(m, i.idx), 0) + 1), name, qty, unit, bought: false, actualUnit: null, date: "" }];
+    saveItems(next); setAdding(false);
+  };
+
+  if (loading) return <div style={{ ...page, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 320 }}><span style={{ fontFamily: BODY, color: C.muted }}>Loading shopping list…</span></div>;
+
+  /* ---- totals ---- */
+  const budgetTotal = items.reduce((a, it) => a + line(it.unit, it.qty, tax).total, 0);
+  const boughtItems = items.filter((it) => it.bought);
+  const spent = boughtItems.reduce((a, it) => a + line(it.actualUnit ?? it.unit, it.qty, tax).total, 0);
+  const remainingToBuy = items.filter((it) => !it.bought).reduce((a, it) => a + line(it.unit, it.qty, tax).total, 0);
+  const variance = boughtItems.reduce((a, it) => a + (line(it.actualUnit ?? it.unit, it.qty, tax).total - line(it.unit, it.qty, tax).total), 0);
+  const projected = spent + remainingToBuy;
+
+  const shown = items.filter((it) => filter === "all" ? true : filter === "bought" ? it.bought : !it.bought);
+
+  /* ---- CSV ---- */
+  const exportCSV = () => {
+    const head = ["#", "Item", "Qty", "Budget unit", "Budget total (incl HST)", "Bought", "Paid unit", "Paid total (incl HST)", "Price change", "Date"];
+    const rows = [head];
+    items.forEach((it) => {
+      const b = line(it.unit, it.qty, tax);
+      const bought = it.bought;
+      const a = bought ? line(it.actualUnit ?? it.unit, it.qty, tax) : null;
+      const change = bought && it.actualUnit != null ? r2((it.actualUnit - it.unit)) : "";
+      rows.push([it.idx, it.name, it.qty, it.unit.toFixed(2), b.total.toFixed(2), bought ? "Yes" : "No",
+        bought ? (it.actualUnit ?? it.unit).toFixed(2) : "", a ? a.total.toFixed(2) : "",
+        change === "" ? "" : (change > 0 ? "+" : "") + change.toFixed(2), bought ? it.date : ""]);
+    });
+    rows.push([]);
+    rows.push(["", "Budget total", "", "", budgetTotal.toFixed(2), "", "", spent.toFixed(2), variance.toFixed(2), ""]);
+    const csv = rows.map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
+    const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = "shopping_list.csv"; a.click(); URL.revokeObjectURL(url);
+  };
+
+  const boughtCount = boughtItems.length;
+  const pct = items.length ? Math.round((boughtCount / items.length) * 100) : 0;
+
+  return (
+    <div style={page}>
+      <style>{globalCSS}</style>
+
+      <header style={{ padding: "22px 18px 14px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={eyebrow}>Materials shopping list</div>
+            <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 23, color: C.ink, margin: "2px 0 0", lineHeight: 1.1 }}>{settings.programName}</h1>
+          </div>
+          <button onClick={() => setShowSettings((v) => !v)} style={{ ...iconBtn, fontSize: 18 }} title="Settings">⚙</button>
+        </div>
+
+        {showSettings && (
+          <div style={{ ...card, marginTop: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 12 }}>
+              <Field label="Program name"><input value={settings.programName} onChange={(e) => saveSettings({ ...settings, programName: e.target.value })} style={input} /></Field>
+              <Field label="Tax %"><input type="number" step="0.1" value={(settings.taxRate * 100).toFixed(1)} onChange={(e) => saveSettings({ ...settings, taxRate: (parseFloat(e.target.value) || 0) / 100 })} style={{ ...input, width: 90, fontFamily: MONO }} /></Field>
+            </div>
+          </div>
+        )}
+      </header>
+
+      {/* summary */}
+      <div style={{ padding: "0 18px" }}>
+        <div style={{ ...card, padding: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+            <span style={{ fontFamily: BODY, fontWeight: 600, fontSize: 13, color: C.ink }}>{boughtCount} of {items.length} bought</span>
+            <span style={{ fontFamily: MONO, fontSize: 12, color: C.muted }}>{pct}%</span>
+          </div>
+          <div style={{ height: 8, background: C.lineSoft, borderRadius: 5, overflow: "hidden", marginBottom: 14 }}>
+            <div style={{ width: `${pct}%`, height: "100%", background: C.pine, borderRadius: 5, transition: "width .3s" }} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 12 }}>
+            <Metric label="Spent" value={money(spent)} />
+            <Metric label="Still to buy" value={money(remainingToBuy)} />
+            <Metric label="Budget" value={money(budgetTotal)} />
+            <Metric label={variance > 0.005 ? "Over budget" : variance < -0.005 ? "Under budget" : "On budget"}
+              value={(variance > 0 ? "+" : "") + money(variance)}
+              color={variance > 0.005 ? C.red : variance < -0.005 ? C.green : C.muted} />
+          </div>
+          {Math.abs(projected - budgetTotal) > 0.005 && (
+            <div style={{ marginTop: 12, fontFamily: BODY, fontSize: 12.5, color: projected > budgetTotal ? C.red : C.green, background: projected > budgetTotal ? C.redSoft : C.greenSoft, borderRadius: 8, padding: "8px 11px" }}>
+              At current prices you're trending toward <b style={{ fontFamily: MONO }}>{money(projected)}</b> — {projected > budgetTotal ? `${money(projected - budgetTotal)} over` : `${money(budgetTotal - projected)} under`} the {money(budgetTotal)} budget.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* filters */}
+      <div style={{ display: "flex", gap: 6, padding: "14px 18px 10px", alignItems: "center", flexWrap: "wrap" }}>
+        {[["todo", "To buy"], ["bought", "Bought"], ["all", "All"]].map(([k, label]) => (
+          <button key={k} onClick={() => setFilter(k)} style={{
+            fontFamily: BODY, fontSize: 13, fontWeight: 600, cursor: "pointer", borderRadius: 999,
+            border: `1.5px solid ${filter === k ? C.pine : C.line}`, background: filter === k ? C.pine : C.surface,
+            color: filter === k ? "#fff" : C.muted, padding: "6px 14px",
+          }}>{label}{k === "todo" ? ` (${items.filter((i) => !i.bought).length})` : k === "bought" ? ` (${boughtCount})` : ""}</button>
+        ))}
+        <div style={{ flex: 1 }} />
+        <button onClick={exportCSV} style={btnGhost}>↓ CSV</button>
+      </div>
+
+      {/* list */}
+      <div style={{ padding: "0 18px 28px" }}>
+        <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+          {shown.length === 0 ? (
+            <div style={{ padding: 36, textAlign: "center", fontFamily: BODY, color: C.muted, fontSize: 14 }}>
+              {filter === "bought" ? "Nothing bought yet — tick items as you purchase them." : "All done here."}
+            </div>
+          ) : shown.map((it, i) => (
+            <Row key={it.id} it={it} tax={tax} first={i === 0} onToggle={() => toggleBought(it)} onUpdate={(patch) => update(it.id, patch)} onRemove={() => remove(it.id)} />
+          ))}
+        </div>
+
+        {adding ? (
+          <AddRow onAdd={addItem} onCancel={() => setAdding(false)} />
+        ) : (
+          <button onClick={() => setAdding(true)} style={{ ...btnGhost, marginTop: 12, width: "100%" }}>+ Add an item not on the list</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  Item row                                                           */
+/* ================================================================== */
+function Row({ it, tax, first, onToggle, onUpdate, onRemove }) {
+  const b = line(it.unit, it.qty, tax);
+  const actualUnit = it.actualUnit ?? it.unit;
+  const a = line(actualUnit, it.qty, tax);
+  const diff = it.bought ? r2(actualUnit - it.unit) : 0;
+  const changed = it.bought && Math.abs(diff) > 0.005;
+
+  return (
+    <div style={{ padding: "12px 14px", borderTop: first ? "none" : `1px solid ${C.lineSoft}`, background: it.bought ? "#FBFCFA" : C.surface }}>
+      <div style={{ display: "flex", gap: 11, alignItems: "flex-start" }}>
+        <button onClick={onToggle} aria-label="toggle bought" style={{
+          flexShrink: 0, width: 24, height: 24, marginTop: 1, borderRadius: 7, cursor: "pointer",
+          border: `2px solid ${it.bought ? C.pine : C.line}`, background: it.bought ? C.pine : C.surface,
+          color: "#fff", fontSize: 14, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center",
+        }}>{it.bought ? "✓" : ""}</button>
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: BODY, fontWeight: 600, fontSize: 14, color: C.ink, textDecoration: it.bought ? "none" : "none" }}>
+            <span style={{ fontFamily: MONO, fontSize: 11, color: C.muted, marginRight: 6 }}>{it.idx}</span>{it.name}
+          </div>
+          <div style={{ fontFamily: BODY, fontSize: 12, color: C.muted, marginTop: 2 }}>
+            Qty {it.qty} · budgeted {money(it.unit)} ea
+          </div>
+
+          {it.bought && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+              <span style={{ fontFamily: MONO, fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: 0.5 }}>Paid</span>
+              <span style={{ fontFamily: MONO, fontSize: 13, color: C.muted }}>$</span>
+              <input type="number" step="0.01" value={actualUnit} onChange={(e) => onUpdate({ actualUnit: parseFloat(e.target.value) || 0 })} style={{ ...input, width: 78, fontFamily: MONO, padding: "5px 8px" }} />
+              <span style={{ fontFamily: BODY, fontSize: 12, color: C.muted }}>ea</span>
+              <input type="date" value={it.date || ""} onChange={(e) => onUpdate({ date: e.target.value })} style={{ ...input, width: 140, padding: "5px 8px" }} />
+            </div>
+          )}
+
+          {changed && (
+            <div style={{ marginTop: 6, display: "inline-flex", alignItems: "center", gap: 5, fontFamily: BODY, fontSize: 12, fontWeight: 600,
+              color: diff > 0 ? C.red : C.green, background: diff > 0 ? C.redSoft : C.greenSoft, borderRadius: 6, padding: "2px 8px" }}>
+              {diff > 0 ? "▲" : "▼"} {money(Math.abs(diff))}/ea vs budget {diff > 0 ? "(price went up)" : "(came in lower)"}
+            </div>
+          )}
+        </div>
+
+        <div style={{ textAlign: "right", flexShrink: 0 }}>
+          <div style={{ fontFamily: MONO, fontWeight: 600, fontSize: 14, color: it.bought ? C.ink : C.muted }}>{money(it.bought ? a.total : b.total)}</div>
+          <div style={{ fontFamily: BODY, fontSize: 10.5, color: C.muted }}>{it.bought ? "paid · incl tax" : "budget · incl tax"}</div>
+          <button onClick={onRemove} style={{ ...iconBtn, color: C.muted, fontSize: 12, marginTop: 2 }} title="Remove">🗑</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  Add row                                                            */
+/* ================================================================== */
+function AddRow({ onAdd, onCancel }) {
+  const [name, setName] = useState("");
+  const [qty, setQty] = useState("1");
+  const [unit, setUnit] = useState("");
+  const go = () => { if (name.trim() && unit) onAdd(name.trim(), parseInt(qty) || 1, parseFloat(unit) || 0); };
+  return (
+    <div style={{ ...card, marginTop: 12, borderColor: C.marigold }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <Field label="Item"><input value={name} onChange={(e) => setName(e.target.value)} style={{ ...input, minWidth: 160 }} autoFocus /></Field>
+        <Field label="Qty"><input type="number" value={qty} onChange={(e) => setQty(e.target.value)} style={{ ...input, width: 64, fontFamily: MONO }} /></Field>
+        <Field label="Unit price"><input type="number" step="0.01" value={unit} placeholder="0.00" onChange={(e) => setUnit(e.target.value)} style={{ ...input, width: 100, fontFamily: MONO }} /></Field>
+        <button onClick={go} style={btnPrimary}>Add</button>
+        <button onClick={onCancel} style={btnGhost}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  Bits & styles                                                      */
+/* ================================================================== */
+function Metric({ label, value, color }) {
+  return <div>
+    <div style={{ fontFamily: MONO, fontSize: 10, letterSpacing: 1, color: C.muted, textTransform: "uppercase" }}>{label}</div>
+    <div style={{ fontFamily: MONO, fontSize: 18, fontWeight: 600, color: color || C.ink, marginTop: 3 }}>{value}</div>
+  </div>;
+}
+function Field({ label, children }) {
+  return <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+    <span style={{ fontFamily: MONO, fontSize: 10, letterSpacing: 1, color: C.muted, textTransform: "uppercase", fontWeight: 500 }}>{label}</span>
+    {children}
+  </label>;
+}
+
+const page = { background: C.bg, minHeight: "100%", color: C.ink, fontFamily: BODY };
+const eyebrow = { fontFamily: MONO, fontSize: 11, letterSpacing: 2, color: C.marigold, textTransform: "uppercase", fontWeight: 600 };
+const card = { background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: 18 };
+const input = { fontFamily: BODY, fontSize: 14, color: C.ink, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 9, padding: "9px 11px", outline: "none", width: "100%", boxSizing: "border-box" };
+const btnPrimary = { fontFamily: BODY, fontWeight: 700, fontSize: 14, color: "#fff", background: C.pine, border: "none", borderRadius: 9, padding: "10px 16px", cursor: "pointer", whiteSpace: "nowrap" };
+const btnGhost = { fontFamily: BODY, fontWeight: 600, fontSize: 14, color: C.pine, background: C.surface, border: `1.5px solid ${C.line}`, borderRadius: 9, padding: "9px 14px", cursor: "pointer", whiteSpace: "nowrap" };
+const iconBtn = { background: "none", border: "none", cursor: "pointer", padding: 6, borderRadius: 7, color: C.muted, lineHeight: 1 };
+
+const globalCSS = `
+  * { -webkit-font-smoothing: antialiased; }
+  input:focus { border-color: ${C.pine} !important; box-shadow: 0 0 0 3px rgba(31,77,58,.12); }
+  button:focus-visible { outline: 2px solid ${C.pine}; outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+`;
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
